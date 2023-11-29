@@ -1,9 +1,8 @@
 ffmpeg-python
 torch
 librosa
-spleeter==1.5.4
+spleeter==2.4.0
 soundfile
 youtube_dl
 tqdm
 mido
-numpy==1.19.5

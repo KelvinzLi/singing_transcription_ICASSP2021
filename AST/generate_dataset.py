@@ -15,9 +15,9 @@ def main(args):
 
     # Write the datasets into binary files
     filename_trail = args.filename_trail
-    target_path = Path(args.output_dir) / (Path(args.data_dir).stem + filename_trail)
+    target_path = Path(args.output_dir) / (Path(args.split_txt).stem + filename_trail)
 
-    dataset = AudioDataset(gt_path=args.gt_path, data_dir=args.data_dir)
+    dataset = AudioDataset(gt_path=args.gt_path, data_dir=args.data_dir, split_txt=args.split_txt)
 
     with open(target_path, 'wb') as f:
         pickle.dump(dataset, f)
@@ -38,6 +38,7 @@ if __name__ == "__main__":
     parser.add_argument('gt_path')
     parser.add_argument('output_dir')
     parser.add_argument('filename_trail')
+    parser.add_argument('-s', '--split_txt', default=None)
 
     args = parser.parse_args()
 

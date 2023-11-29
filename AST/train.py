@@ -1,27 +1,43 @@
 import torch
 import torch.nn as nn
 import argparse
-from predictor import EffNetPredictor
+from predictor import Predictor
 import os
 
 def main(args):
-
     device= 'cpu'
     if torch.cuda.is_available():
         device = args.device
     print ("use", device)
 
-    predictor = EffNetPredictor(device=device, model_path=args.model_path)
+    predictor = Predictor(device=device, 
+                          model_path=args.model_path, 
+                          # model_import_path='net.mimo_unet.Unet'
+                         )
+    # predictor.fit(
+    #     train_dataset_path=args.training_dataset,
+    #     valid_dataset_path=args.validation_dataset,
+    #     model_dir=args.model_dir,
+    #     batch_size=50,
+    #     valid_batch_size=200,
+    #     epoch=10,
+    #     lr=1e-4,
+    #     save_every_epoch=1,
+    #     save_prefix=args.save_prefix
+    # )
+    
     predictor.fit(
         train_dataset_path=args.training_dataset,
         valid_dataset_path=args.validation_dataset,
         model_dir=args.model_dir,
-        batch_size=50,
-        valid_batch_size=200,
-        epoch=10,
-        lr=1e-4,
+        batch_size=64,
+        valid_batch_size=128,
+        epoch=3,
+        lr=1e-3, #1e-4,
         save_every_epoch=1,
-        save_prefix=args.save_prefix
+        save_prefix=args.save_prefix,
+        # dataset_import_path='data_utils.custom_mimo_audio_dataset.MimoAudioDataset',
+        dataset_kwargs = {'window_size': 11},
     )
 
 
@@ -47,6 +63,9 @@ if __name__ == '__main__':
     parser.add_argument('save_prefix')
     parser.add_argument('device')
     parser.add_argument('--model-path')
+    # parser.add_argument('--model-import-path')
+    # parser.add_argument('--dataset-import-path')
+    
 
     args = parser.parse_args()
 

@@ -9,38 +9,39 @@ import pickle
 from tqdm import tqdm
 from collections import Counter
 import numpy as np
+import pandas as pd
+from importlib import import_module
 
 import sys
 import os
 
-from net import EffNetb0
+from net import EffNetb0, largerEffNetb0
 import math
 from data_utils import AudioDataset
 
 FRAME_LENGTH = librosa.frames_to_time(1, sr=44100, hop_length=1024)
 
 
-class EffNetPredictor:
-    def __init__(self, device= "cuda:0", model_path=None):
+class Predictor:
+    def __init__(self, device= "cuda:0", model_path=None, model_import_path='net.EffNetb0', model_kwargs={}):
         """
         Params:
         model_path: Optional pretrained model file
         """
         # Initialize model
         self.device = device
+        
+        model_builder = getattr(import_module('.'.join(model_import_path.split('.')[:-1])), model_import_path.split('.')[-1])
 
+        self.model = model_builder(**model_kwargs).to(self.device)
         if model_path is not None:
-            self.model = EffNetb0().to(self.device)
             self.model.load_state_dict(torch.load(model_path, map_location=self.device), strict=False)
             print('Model read from {}.'.format(model_path))
 
-        else:            
-            self.model = EffNetb0().to(self.device)
-
-        print('Predictor initialized.')
+        print('Predictor initialized with {}.'.format(model_import_path))
 
 
-    def fit(self, train_dataset_path, valid_dataset_path, model_dir, **training_args):
+    def fit(self, train_dataset_path, valid_dataset_path, model_dir, dataset_kwargs={}, dataset_import_path='data_utils.AudioDataset', **training_args):
         """
         train_dataset_path: The path to the training dataset.pkl
         valid_dataset_path: The path to the validation dataset.pkl
@@ -64,25 +65,10 @@ class EffNetPredictor:
         self.epoch = training_args['epoch']
         self.lr = training_args['lr']
         self.save_every_epoch = training_args['save_every_epoch']
-
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
-
-        self.onset_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([15.0,], device=self.device))
-        self.offset_criterion = nn.BCEWithLogitsLoss()
-
-        self.octave_criterion = nn.CrossEntropyLoss(ignore_index=100)
-        self.pitch_criterion = nn.CrossEntropyLoss(ignore_index=100)
-
-        # Read the datasets
-        print('Reading datasets...')
-        print ('cur time: %.6f' %(time.time()))
-
-
-        with open(self.train_dataset_path, 'rb') as f:
-            self.training_dataset = pickle.load(f)
-
-        with open(self.valid_dataset_path, 'rb') as f:
-            self.validation_dataset = pickle.load(f)
+        
+        dataset_builder = getattr(import_module('.'.join(dataset_import_path.split('.')[:-1])), dataset_import_path.split('.')[-1])
+        self.training_dataset = dataset_builder(self.train_dataset_path, **dataset_kwargs)
+        self.validation_dataset = dataset_builder(self.valid_dataset_path, **dataset_kwargs)
 
         self.train_loader = DataLoader(
             self.training_dataset,
@@ -102,6 +88,31 @@ class EffNetPredictor:
             drop_last=False,
         )
 
+        start_epoch = 1
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, self.epoch * len(self.train_loader) + 1)
+        
+        if 'checkpoint.pth' in os.listdir(model_dir):
+            print('training model from checkpoint ......')
+            
+            checkpoint_path = os.path.join(model_dir, 'checkpoint.pth')
+            checkpoint = torch.load(checkpoint_path)
+
+            start_epoch = checkpoint['epoch'] + 1
+            self.model.load_state_dict(checkpoint['model'])
+            self.optimizer.load_state_dict(checkpoint['opt'])
+            self.scheduler.load_state_dict(checkpoint['scheduler'])
+
+        self.onset_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([15.0,], device=self.device))
+        self.offset_criterion = nn.BCEWithLogitsLoss()
+
+        self.octave_criterion = nn.CrossEntropyLoss(ignore_index=100)
+        self.pitch_criterion = nn.CrossEntropyLoss(ignore_index=100)
+
+        # Read the datasets
+        print('Reading datasets...')
+        print ('cur time: %.6f' %(time.time()))
+
         start_time = time.time()
         # Start training
         print('Start training...')
@@ -109,45 +120,73 @@ class EffNetPredictor:
         self.iters_per_epoch = len(self.train_loader)
         print (self.iters_per_epoch)
 
-        for epoch in range(1, self.epoch + 1):
+        for epoch in range(start_epoch, self.epoch + 1):
+            
+            train_history = []
+            
             self.model.train()
 
             total_training_loss = 0
             total_split_loss = np.zeros(4)            
 
-            for batch_idx, batch in enumerate(self.train_loader):
-                # Parse batch data
-                
-                input_tensor = batch[0].to(self.device)
-                onset_prob = batch[1][:, 0].float().to(self.device)
-                offset_prob = batch[1][:, 1].float().to(self.device)
-                pitch_octave = batch[1][:, 2].long().to(self.device)
-                pitch_class = batch[1][:, 3].long().to(self.device)
+            with tqdm(self.train_loader, unit=" batch") as pbar:
+                pbar.set_description('epoch_{}'.format(epoch))
+                for batch_idx, batch in enumerate(pbar):
+                    # Parse batch data
 
-                loss = 0                
-                self.optimizer.zero_grad()
+                    input_tensor = batch[0].to(self.device)
+                    onset_prob = batch[1][:, 0].float().to(self.device)
+                    offset_prob = batch[1][:, 1].float().to(self.device)
+                    pitch_octave = batch[1][:, 2].long().to(self.device)
+                    pitch_class = batch[1][:, 3].long().to(self.device)
 
-                onset_logits, offset_logits, pitch_octave_logits, pitch_class_logits = self.model(input_tensor)
+                    loss = 0                
+                    self.optimizer.zero_grad()
 
-                split_train_loss0 = self.onset_criterion(onset_logits, onset_prob)
-                split_train_loss1 = self.offset_criterion(offset_logits, offset_prob)
-                split_train_loss2 = self.octave_criterion(pitch_octave_logits, pitch_octave)
-                split_train_loss3 = self.pitch_criterion(pitch_class_logits, pitch_class)
+                    onset_logits, offset_logits, pitch_octave_logits, pitch_class_logits = self.model(input_tensor)
+                    
+                    # print(batch[1][0][:, :5])
+                    # print(onset_logits.size(), onset_prob.size())
+                    # print(pitch_octave_logits.size(), pitch_octave.size())
+                    # print(pitch_class_logits.size(), pitch_class.size())
 
-               
-                
-                total_split_loss[0] = total_split_loss[0] + split_train_loss0.item() 
-                total_split_loss[1] = total_split_loss[1] + split_train_loss1.item()
-                total_split_loss[2] = total_split_loss[2] + split_train_loss2.item()
-                total_split_loss[3] = total_split_loss[3] + split_train_loss3.item()
+                    split_train_loss0 = self.onset_criterion(onset_logits, onset_prob)
+                    split_train_loss1 = self.offset_criterion(offset_logits, offset_prob)
+                    split_train_loss2 = self.octave_criterion(pitch_octave_logits, pitch_octave)
+                    split_train_loss3 = self.pitch_criterion(pitch_class_logits, pitch_class)
+                    
+                    if split_train_loss0 < 0:
+                        print(0)
+                    if split_train_loss1 < 0:
+                        print(1)
+                    if split_train_loss2 < 0:
+                        print(2)
+                    if split_train_loss3 < 0:
+                        print(3)
 
-                loss = split_train_loss0 + split_train_loss1 + split_train_loss2 + split_train_loss3
-                loss.backward()
-                self.optimizer.step()
-                total_training_loss += loss.item()
-                
-                if batch_idx % 5000 == 0 and batch_idx != 0:
-                    print (epoch, batch_idx, "time:", time.time()-start_time, "loss:", total_training_loss / (batch_idx+1))
+
+
+                    total_split_loss[0] = total_split_loss[0] + split_train_loss0.item() 
+                    total_split_loss[1] = total_split_loss[1] + split_train_loss1.item()
+                    total_split_loss[2] = total_split_loss[2] + split_train_loss2.item()
+                    total_split_loss[3] = total_split_loss[3] + split_train_loss3.item()
+
+                    loss = 1.2*split_train_loss0 + 1.2*split_train_loss1 + 0.8*split_train_loss2 + 0.8*split_train_loss3
+                    loss.backward()
+                    self.optimizer.step()
+                    
+                    current_lr = self.optimizer.param_groups[0]['lr']
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                    total_training_loss += loss.item()
+                    
+                    logs = {'loss': loss.item(), 'lr': current_lr}
+                    train_history.append(logs)
+
+                    pbar.set_postfix(logs)
+
+                    # if batch_idx % 5000 == 0 and batch_idx != 0:
+                    #     print (epoch, batch_idx, "time:", time.time()-start_time, "loss:", total_training_loss / (batch_idx+1))
 
 
             if epoch % self.save_every_epoch == 0:
@@ -188,6 +227,28 @@ class EffNetPredictor:
                 save_dict = self.model.state_dict()
                 target_model_path = Path(self.model_dir) / (training_args['save_prefix']+'_{}'.format(epoch))
                 torch.save(save_dict, target_model_path)
+                
+                # Save Checkpoint
+                checkpoint = {
+                    'epoch': epoch,
+                    'model': self.model.state_dict(),
+                    'opt': self.optimizer.state_dict(),
+                    'scheduler': self.scheduler.state_dict()}
+                torch.save(checkpoint, os.path.join(self.model_dir, 'checkpoint.pth'))
+                
+                # Save Training History
+                df = pd.DataFrame(train_history)
+                df.to_csv(os.path.join(self.model_dir, 'epoch_{}.csv'.format(epoch)))
+                
+                val_log = pd.DataFrame([{'epoch': epoch, 'iters': len(self.train_loader) * epoch, 'loss': total_valid_loss / len(self.valid_loader)}])
+                
+                val_history = None
+                val_file_name = 'validation_history.csv'
+                if val_file_name in os.listdir(self.model_dir):
+                    val_history = pd.read_csv(os.path.join(self.model_dir, val_file_name))
+                val_history = val_log if val_history is None else pd.concat([val_history, val_log])
+                val_history.to_csv(os.path.join(self.model_dir, val_file_name))
+                
 
                 # Epoch statistics
                 print(
@@ -212,6 +273,7 @@ class EffNetPredictor:
                         split_val_loss[3]/len(self.valid_loader)
                     )
                 )
+        
         print('Training done in {:.1f} minutes.'.format((time.time()-start_time)/60))
 
     def _parse_frame_info(self, frame_info, onset_thres, offset_thres):

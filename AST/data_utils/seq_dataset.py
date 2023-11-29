@@ -29,7 +29,7 @@ def do_svs_spleeter(y, sr):
 
 class SeqDataset(Dataset):
 
-    def __init__(self, wav_path, song_id, is_test=False, do_svs=False):
+    def __init__(self, wav_path, song_id, is_test=False, do_svs=False, window_size=21):
 
         y, sr = librosa.core.load(wav_path, sr=None, mono=True)
         if sr != 44100:
@@ -51,7 +51,7 @@ class SeqDataset(Dataset):
 
         for frame_idx in range(frame_num):
             cqt_feature = []
-            for frame_window_idx in range(frame_idx - 5, frame_idx + 6):
+            for frame_window_idx in range(frame_idx-self.window_size//2, frame_idx+self.window_size//2+1):
                 # padding with zeros if needed
                 if frame_window_idx < 0 or frame_window_idx >= frame_num:
                     cqt_feature.append(my_padding.unsqueeze(1))
