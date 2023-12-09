@@ -29,7 +29,7 @@ def do_svs_spleeter(y, sr):
 
 class SeqDataset(Dataset):
 
-    def __init__(self, wav_path, song_id, is_test=False, do_svs=False, window_size=21):
+    def __init__(self, wav_path, song_id, is_test=False, do_svs=False, window_size=11):
 
         y, sr = librosa.core.load(wav_path, sr=None, mono=True)
         if sr != 44100:
