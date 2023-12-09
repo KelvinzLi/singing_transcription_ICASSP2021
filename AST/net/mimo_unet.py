@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 
-from .ConvModules import ConvLayer2d, ConcatConnect
+from net.ConvModules import ConvLayer2d, ConcatConnect
 
 class DimMapper(nn.Module):
     def __init__(self):
