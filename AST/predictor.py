@@ -15,7 +15,7 @@ from importlib import import_module
 import sys
 import os
 
-from net import EffNetb0, largerEffNetb0
+from net import EffNetb0
 import math
 from data_utils import AudioDataset
 
@@ -28,6 +28,7 @@ class Predictor:
         Params:
         model_path: Optional pretrained model file
         """
+        
         # Initialize model
         self.device = device
         
@@ -41,7 +42,17 @@ class Predictor:
         print('Predictor initialized with {}.'.format(model_import_path))
 
 
-    def fit(self, train_dataset_path, valid_dataset_path, model_dir, dataset_kwargs={}, dataset_import_path='data_utils.AudioDataset', **training_args):
+    def fit(
+        self, 
+        train_dataset_path, 
+        valid_dataset_path, model_dir, 
+        dataset_import_path='data_utils.AudioDataset', 
+        dataset_kwargs={}, 
+        weight_decay=0, 
+        onset_pos_weight=15.0,
+        loss_weights = [1.2, 1.2, 0.8, 0.8],
+        **training_args
+    ):
         """
         train_dataset_path: The path to the training dataset.pkl
         valid_dataset_path: The path to the validation dataset.pkl
@@ -53,6 +64,7 @@ class Predictor:
           - lr
           - save_every_epoch
         """
+        
         # Set paths
         self.train_dataset_path = train_dataset_path
         self.valid_dataset_path = valid_dataset_path
@@ -89,7 +101,7 @@ class Predictor:
         )
 
         start_epoch = 1
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=weight_decay)
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, self.epoch * len(self.train_loader) + 1)
         
         if 'checkpoint.pth' in os.listdir(model_dir):
@@ -103,7 +115,7 @@ class Predictor:
             self.optimizer.load_state_dict(checkpoint['opt'])
             self.scheduler.load_state_dict(checkpoint['scheduler'])
 
-        self.onset_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([15.0,], device=self.device))
+        self.onset_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([float(onset_pos_weight),], device=self.device))
         self.offset_criterion = nn.BCEWithLogitsLoss()
 
         self.octave_criterion = nn.CrossEntropyLoss(ignore_index=100)
@@ -120,6 +132,8 @@ class Predictor:
         self.iters_per_epoch = len(self.train_loader)
         print (self.iters_per_epoch)
 
+        print_keys = ('loss', 'tp', 'tn')
+        
         for epoch in range(start_epoch, self.epoch + 1):
             
             train_history = []
@@ -145,10 +159,6 @@ class Predictor:
 
                     onset_logits, offset_logits, pitch_octave_logits, pitch_class_logits = self.model(input_tensor)
                     
-                    # print(batch[1][0][:, :5])
-                    # print(onset_logits.size(), onset_prob.size())
-                    # print(pitch_octave_logits.size(), pitch_octave.size())
-                    # print(pitch_class_logits.size(), pitch_class.size())
 
                     split_train_loss0 = self.onset_criterion(onset_logits, onset_prob)
                     split_train_loss1 = self.offset_criterion(offset_logits, offset_prob)
@@ -164,26 +174,35 @@ class Predictor:
                     if split_train_loss3 < 0:
                         print(3)
 
-
+                    # print(onset_prob.shape)
+                    # print(onset_logits.size())
+                    # print(onset_prob[0, :10])
+                    # print(torch.sigmoid(onset_logits)[0, :10].detach().cpu().numpy())
 
                     total_split_loss[0] = total_split_loss[0] + split_train_loss0.item() 
                     total_split_loss[1] = total_split_loss[1] + split_train_loss1.item()
                     total_split_loss[2] = total_split_loss[2] + split_train_loss2.item()
                     total_split_loss[3] = total_split_loss[3] + split_train_loss3.item()
 
-                    loss = 1.2*split_train_loss0 + 1.2*split_train_loss1 + 0.8*split_train_loss2 + 0.8*split_train_loss3
+                    loss = loss_weights[0]*split_train_loss0 + loss_weights[1]*split_train_loss1 + loss_weights[2]*split_train_loss2 + loss_weights[3]*split_train_loss3
                     loss.backward()
                     self.optimizer.step()
+                    
+                    onset_prob_np = 1 * (batch[1][:, 0].float().numpy() > 0.2)
+                    onset_pred_np = 1 * (torch.sigmoid(onset_logits).detach().cpu().numpy() > 0.5)
+                    
+                    true_pos_onset = np.sum(onset_prob_np * onset_pred_np) / np.sum(onset_prob_np)
+                    true_neg_onset = np.sum((1 - onset_prob_np) * (1 - onset_pred_np)) / np.sum(1 - onset_prob_np)
                     
                     current_lr = self.optimizer.param_groups[0]['lr']
                     if self.scheduler is not None:
                         self.scheduler.step()
                     total_training_loss += loss.item()
                     
-                    logs = {'loss': loss.item(), 'lr': current_lr}
+                    logs = {'loss': loss.item(), 'lr': current_lr, 'tp': true_pos_onset, 'tn': true_neg_onset}
                     train_history.append(logs)
 
-                    pbar.set_postfix(logs)
+                    pbar.set_postfix({k: logs[k] for k in print_keys})
 
                     # if batch_idx % 5000 == 0 and batch_idx != 0:
                     #     print (epoch, batch_idx, "time:", time.time()-start_time, "loss:", total_training_loss / (batch_idx+1))
@@ -195,6 +214,9 @@ class Predictor:
                 with torch.no_grad():
                     total_valid_loss = 0
                     split_val_loss = np.zeros(6)
+                    
+                    total_valid_tp_onset = 0
+                    total_valid_tn_onset = 0
                     for batch_idx, batch in enumerate(self.valid_loader):
 
                         input_tensor = batch[0].to(self.device)
@@ -219,8 +241,14 @@ class Predictor:
 
                         
                         # Calculate loss
-                        loss = split_val_loss0 + split_val_loss1 + split_val_loss2 + split_val_loss3
+                        loss = loss_weights[0]*split_val_loss0 + loss_weights[1]*split_val_loss1 + loss_weights[2]*split_val_loss2 + loss_weights[3]*split_val_loss3
                         total_valid_loss += loss.item()
+                        
+                        onset_prob_np = 1 * (batch[1][:, 0].float().numpy() > 0.2)
+                        onset_pred_np = 1 * (torch.sigmoid(onset_logits).detach().cpu().numpy() > 0.5)
+
+                        total_valid_tp_onset += (np.sum(onset_prob_np * onset_pred_np) / np.sum(onset_prob_np))
+                        total_valid_tn_onset += (np.sum((1 - onset_prob_np) * (1 - onset_pred_np)) / np.sum(1 - onset_prob_np))
 
 
                 # Save model
@@ -240,7 +268,10 @@ class Predictor:
                 df = pd.DataFrame(train_history)
                 df.to_csv(os.path.join(self.model_dir, 'epoch_{}.csv'.format(epoch)))
                 
-                val_log = pd.DataFrame([{'epoch': epoch, 'iters': len(self.train_loader) * epoch, 'loss': total_valid_loss / len(self.valid_loader)}])
+                val_log = pd.DataFrame([{'epoch': epoch, 'iters': len(self.train_loader) * epoch, 
+                                         'loss': total_valid_loss / len(self.valid_loader), 
+                                         'tp': total_valid_tp_onset / len(self.valid_loader), 
+                                         'tn': total_valid_tn_onset / len(self.valid_loader)}])
                 
                 val_history = None
                 val_file_name = 'validation_history.csv'
@@ -271,6 +302,11 @@ class Predictor:
                         split_val_loss[1]/len(self.valid_loader),
                         split_val_loss[2]/len(self.valid_loader),
                         split_val_loss[3]/len(self.valid_loader)
+                    )
+                )
+                print('onset: true positive ratio {:.4f} true false negative {:.4f}'.format(
+                        total_valid_tp_onset / len(self.valid_loader),
+                        total_valid_tn_onset / len(self.valid_loader),
                     )
                 )
         

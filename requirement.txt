@@ -6,3 +6,4 @@ soundfile
 youtube_dl
 tqdm
 mido
+toml
