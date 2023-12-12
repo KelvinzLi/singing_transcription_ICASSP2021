@@ -13,7 +13,7 @@ import time
 import json
 
 class AudioDataset(Dataset):
-    def __init__(self, data_dir, window_size=11, onset_decay=0.875):
+    def __init__(self, data_dir, window_size=11, onset_decay=0.875, label_smoother=None):
         self.data_dir = data_dir
         self.window_size = window_size
         self.onset_decay = onset_decay

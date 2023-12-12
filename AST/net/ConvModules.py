@@ -13,6 +13,19 @@ class ConvLayer1d(nn.Module):
         x = self.bn(x)
         x = self.activation(x)
         return x
+
+class DepthwiseConv1d(nn.Module):
+    def __init__(self, in_features, out_features, *conv_args, mid_features=None, **conv_kwargs):
+        super().__init__()
+        
+        if mid_features is None:
+            mid_features = in_features
+        
+        self.depthwise = nn.Conv1d(in_features, mid_features, *conv_args, groups=in_features, **conv_kwargs)
+        self.pointwise = nn.Conv1d(mid_features, out_features, kernel_size=1)
+        
+    def forward(self, x):
+        return self.pointwise(self.depthwise(x))
     
 class ConvLayer2d(nn.Module):
     def __init__(self, in_features, out_features, *conv_args, activation=nn.ReLU(), conv_builder=nn.Conv2d, **conv_kwargs):
@@ -28,8 +41,12 @@ class ConvLayer2d(nn.Module):
         return x
     
 class DepthwiseConv2d(nn.Module):
-    def __init__(self, in_features, out_features, *conv_args, **conv_kwargs):
+    def __init__(self, in_features, out_features, mid_features=None, **conv_kwargs):
         super().__init__()
+        
+        if mid_features is None:
+            mid_features = in_features
+        
         self.depthwise = nn.Conv2d(in_features, in_features, *conv_args, groups=in_features, **conv_kwargs)
         self.pointwise = nn.Conv2d(in_features, out_features, kernel_size=1)
         

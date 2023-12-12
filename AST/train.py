@@ -64,6 +64,8 @@ def main(args):
         ('dataset_kwargs', ('dataset', 'dataset_kwargs')),
         ('train_dataset_path', ('dataset', 'train_dataset_path')),
         ('valid_dataset_path', ('dataset', 'valid_dataset_path')),
+        ('label_smoother_import_path', ('dataset', 'label_smoother_import_path')),
+        ('label_smoother_kwargs', ('dataset', 'label_smoother_kwargs')),
     ]
     
     predictor_kwargs = {}

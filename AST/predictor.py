@@ -21,6 +21,36 @@ from data_utils import AudioDataset
 
 FRAME_LENGTH = librosa.frames_to_time(1, sr=44100, hop_length=1024)
 
+def _pooling_prep(x, kernel_size):
+    # assume x (batch_size, time)
+    assert kernel_size % 2 == 1
+    
+    kernel_side_size = kernel_size // 2
+    batch_size, time_length = x.shape
+    
+    x = np.concatenate([np.zeros((batch_size, kernel_side_size)),
+                       x,
+                       np.zeros((batch_size, kernel_side_size))], axis=1)
+    x = np.expand_dims(x, axis=-1)
+    
+    x_slices = [x[:, ii: ii + time_length] for ii in range(kernel_size)]
+    return np.concatenate(x_slices, axis=-1)
+
+def maxpool1d(x, kernel_size):
+    # assume x (batch_size, time)
+    return np.max(_pooling_prep(x, kernel_size), axis=-1)
+
+def sumpool1d(x, kernel_size):
+    # assume x (batch_size, time)
+    return np.sum(_pooling_prep(x, kernel_size), axis=-1)
+
+def tp_tn_analysis(y, gt, kernel_size):
+    tn_mask = 1 - 1 * (sumpool1d(gt, kernel_size) >= 1)
+    
+    tp_ratio = np.sum(gt * maxpool1d(y, kernel_size)) / np.sum(gt)
+    tn_ratio = np.sum(tn_mask * (1 - y)) / np.sum(tn_mask)
+    
+    return tp_ratio, tn_ratio
 
 class Predictor:
     def __init__(self, device= "cuda:0", model_path=None, model_import_path='net.EffNetb0', model_kwargs={}):
@@ -48,6 +78,8 @@ class Predictor:
         valid_dataset_path, model_dir, 
         dataset_import_path='data_utils.AudioDataset', 
         dataset_kwargs={}, 
+        label_smoother_import_path=None, 
+        label_smoother_kwargs={},
         weight_decay=0, 
         onset_pos_weight=15.0,
         loss_weights = [1.2, 1.2, 0.8, 0.8],
@@ -78,9 +110,15 @@ class Predictor:
         self.lr = training_args['lr']
         self.save_every_epoch = training_args['save_every_epoch']
         
+        self.train_smoother = None
+        if label_smoother_import_path is not None:
+            smoother_builder = getattr(import_module('.'.join(label_smoother_import_path.split('.')[:-1])), label_smoother_import_path.split('.')[-1])
+            self.train_smoother = smoother_builder(**label_smoother_kwargs)
+        
+        
         dataset_builder = getattr(import_module('.'.join(dataset_import_path.split('.')[:-1])), dataset_import_path.split('.')[-1])
-        self.training_dataset = dataset_builder(self.train_dataset_path, **dataset_kwargs)
-        self.validation_dataset = dataset_builder(self.valid_dataset_path, **dataset_kwargs)
+        self.training_dataset = dataset_builder(self.train_dataset_path, label_smoother=self.train_smoother, **dataset_kwargs)
+        self.validation_dataset = dataset_builder(self.valid_dataset_path, label_smoother=None, **dataset_kwargs)
 
         self.train_loader = DataLoader(
             self.training_dataset,
@@ -191,8 +229,7 @@ class Predictor:
                     onset_prob_np = 1 * (batch[1][:, 0].float().numpy() > 0.2)
                     onset_pred_np = 1 * (torch.sigmoid(onset_logits).detach().cpu().numpy() > 0.5)
                     
-                    true_pos_onset = np.sum(onset_prob_np * onset_pred_np) / np.sum(onset_prob_np)
-                    true_neg_onset = np.sum((1 - onset_prob_np) * (1 - onset_pred_np)) / np.sum(1 - onset_prob_np)
+                    true_pos_onset, true_neg_onset = tp_tn_analysis(onset_pred_np, onset_prob_np, 11)
                     
                     current_lr = self.optimizer.param_groups[0]['lr']
                     if self.scheduler is not None:
@@ -247,8 +284,10 @@ class Predictor:
                         onset_prob_np = 1 * (batch[1][:, 0].float().numpy() > 0.2)
                         onset_pred_np = 1 * (torch.sigmoid(onset_logits).detach().cpu().numpy() > 0.5)
 
-                        total_valid_tp_onset += (np.sum(onset_prob_np * onset_pred_np) / np.sum(onset_prob_np))
-                        total_valid_tn_onset += (np.sum((1 - onset_prob_np) * (1 - onset_pred_np)) / np.sum(1 - onset_prob_np))
+                        true_pos_onset, true_neg_onset = tp_tn_analysis(onset_pred_np, onset_prob_np, 11)
+                        
+                        total_valid_tp_onset += true_pos_onset
+                        total_valid_tn_onset += true_neg_onset
 
 
                 # Save model

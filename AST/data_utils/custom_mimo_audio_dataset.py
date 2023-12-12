@@ -16,15 +16,14 @@ import json
 
 class MimoAudioDataset(Dataset):
     # around 43 samples persecond for the current setting
-    def __init__(self, data_dir, window_size=128, onset_decay=0.875, stride=32, random_shift=True, kernel_size=1):
+    def __init__(self, data_dir, window_size=128, stride=32, label_smoother=None, random_shift=True, log_and_normalize=False):
         print(window_size)
-        print(onset_decay)
         print(stride)
         
         self.data_dir = data_dir
         self.window_size = window_size
-        self.onset_decay = onset_decay
         self.random_shift = random_shift
+        self.log_and_normalize = log_and_normalize
         
         counter = 0
         
@@ -49,24 +48,7 @@ class MimoAudioDataset(Dataset):
         print(len(self.idx_mapper))
         print(counter)
         
-        # onset_thres = 0.4
-#         if onset_decay == 0:
-#             kernel_side_size = 0
-#         else:
-#             kernel_side_size = int(np.floor(np.log(onset_thres) / np.log(onset_decay)))
-#         kernel_size = 1 + 2 * kernel_side_size
-        
-#         print(kernel_size)
-        
-#         kernel = np.zeros((kernel_size,))
-#         kernel[kernel_side_size] = 1
-#         for ii in range(1, kernel_side_size + 1):
-#             val = np.power(onset_decay, ii)
-#             kernel[kernel_side_size - ii] = val
-#             kernel[kernel_side_size + ii] = val
-            
-        self.kernel = np.ones((kernel_size,))
-        print(self.kernel)
+        self.label_smoother = label_smoother
         
     def __getitem__(self, idx):
         data_idx, frame_idx = self.idx_mapper[idx]
@@ -84,6 +66,11 @@ class MimoAudioDataset(Dataset):
         gt = answer_data[frame_idx: frame_idx+self.window_size]
         cqt_feature = cqt_data[frame_idx: frame_idx+self.window_size]
         
+        if self.log_and_normalize:
+            cqt_feature = torch.clamp(cqt_feature, 1e-6, None)
+            cqt_feature = torch.log10(cqt_feature)
+            cqt_feature = (cqt_feature - torch.mean(cqt_feature)) / torch.clamp(torch.std(cqt_feature), 1e-5, None)
+        
         if len(gt) < self.window_size:
             gt = np.concatenate([gt, [my_gt_padding] * (self.window_size - len(gt))], 0)
             cqt_feature = torch.cat([cqt_feature, torch.stack([my_padding] * (self.window_size - len(cqt_feature)), dim=0)], dim=0)
@@ -91,7 +78,8 @@ class MimoAudioDataset(Dataset):
         cqt_feature = torch.permute(cqt_feature, (1, 0, 2))
         
         gt = gt.astype(np.float32)
-        gt[:, 0] = np.clip(np.convolve(gt[:, 0], self.kernel, 'same'), 0, 1)
+        if self.label_smoother is not None:
+            gt[:, 0] = self.label_smoother(gt[:, 0])
         
         gt = np.transpose(gt)
 
