@@ -416,7 +416,7 @@ class Predictor:
 
         return result
 
-    def predict(self, test_dataset, results={}, onset_thres=0.1, offset_thres=0.5):
+    def predict(self, test_dataset, results={}, onset_thres=0.1, offset_thres=0.5, mimo=False):
         """Predict results for a given test dataset."""
         # Setup params and dataloader
         batch_size = 500
@@ -452,12 +452,28 @@ class Predictor:
 
                 # Collect frames for corresponding songs
                 for bid, song_id in enumerate(song_ids):
-                    frame_info = (onset_probs[bid], offset_probs[bid], torch.argmax(pitch_octave_logits[bid]).item()
-                            , torch.argmax(pitch_class_logits[bid]).item())
+                    if not mimo:
+                        frame_info = (onset_probs[bid], offset_probs[bid], torch.argmax(pitch_octave_logits[bid], 0).item(), torch.argmax(pitch_class_logits[bid], 0).item())
+                    else:
+                        frame_info = (onset_probs[bid].numpy(), offset_probs[bid].numpy(), torch.argmax(pitch_octave_logits[bid], 0).numpy(), torch.argmax(pitch_class_logits[bid], 0).numpy())
 
                     song_frames_table.setdefault(song_id, [])
                     song_frames_table[song_id].append(frame_info)
-                        
+                    
+            if mimo:
+                for song_id, frame_infos in song_frames_table.items():
+                    onset_infos = test_dataset.stitch([f[0] for f in frame_infos])
+                    offset_infos = test_dataset.stitch([f[1] for f in frame_infos])
+                    pitch_octave_infos = test_dataset.stitch([f[2] for f in frame_infos])
+                    pitch_class_infos = test_dataset.stitch([f[3] for f in frame_infos])
+                    
+                    stitched_frame_infos = list(zip(onset_infos, 
+                                                    offset_infos, 
+                                                    pitch_octave_infos, 
+                                                    pitch_class_infos
+                                                   )
+                                               )
+                    song_frames_table[song_id] = stitched_frame_infos
 
             # Parse frame info into output format for every song
             for song_id, frame_info in song_frames_table.items():

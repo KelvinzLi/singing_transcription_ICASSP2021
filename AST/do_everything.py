@@ -3,21 +3,36 @@ import os
 import time
 import argparse
 import torch
-from predictor import EffNetPredictor
+from predictor import Predictor
 
 import argparse
 import json
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))  # nopep8
 from data_utils.seq_dataset import SeqDataset
+from data_utils.mimo_seq_dataset import MimoSeqDataset
 from pathlib import Path
 from tqdm import tqdm
 import mido
 import warnings
 import numpy as np
 
+import yaml, toml
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 warnings.filterwarnings('ignore')
+
+def extract(config, *args):
+    assert isinstance(config, dict)
+    
+    out = config
+    for arg in args:
+        if arg in out:
+            out = out[arg]
+        else:
+            out = None
+            break
+    return out
 
 def notes2mid(notes):
     mid = mido.MidiFile()
@@ -54,17 +69,25 @@ def convert_to_midi(predicted_result, song_id, output_path):
     mid = notes2mid(to_convert)
     mid.save(output_path)
 
-def predict_one_song(predictor, wav_path, song_id, results, do_svs, tomidi, output_path, onset_thres, offset_thres):
+def predict_one_song(predictor, wav_path, song_id, results, do_svs, tomidi, output_path, onset_thres, offset_thres, mimo_kwargs={}):
+    print(mimo_kwargs)
+    
     # os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    test_dataset = SeqDataset(wav_path, song_id, do_svs=do_svs)
+    if not args.mimo:
+        test_dataset = SeqDataset(wav_path, song_id, do_svs=do_svs)
+    else:
+        test_dataset = MimoSeqDataset(wav_path, song_id, do_svs=do_svs, **mimo_kwargs)
 
-    results = predictor.predict(test_dataset, results=results, onset_thres=onset_thres, offset_thres=offset_thres)
+    results = predictor.predict(test_dataset, results=results, onset_thres=onset_thres, offset_thres=offset_thres, mimo=args.mimo)
+    
+    print(results)
+    
     if tomidi:
         convert_to_midi(results, song_id, output_path)
     return results
 
 
-def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres, offset_thres):
+def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres, offset_thres, mimo_kwargs={}):
     
     results = {}
     for song_dir in sorted(Path(test_dir).iterdir()):
@@ -75,7 +98,7 @@ def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres
             continue
 
         results = predict_one_song(predictor, wav_path, song_id, results, do_svs=do_svs
-            , tomidi=False, output_path=None, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres))
+            , tomidi=False, output_path=None, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs=mimo_kwargs)
 
     with open(output_json_path, 'w') as f:
         output_string = json.dumps(results)
@@ -83,7 +106,7 @@ def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres
 
 
 def main(args):
-    model_path = args.model_path
+    model_dir = args.model_dir
     input_path = args.input
     output_path = args.output
 
@@ -92,8 +115,38 @@ def main(args):
         device = args.device
     # print ("use", device)
     os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+    
+    config_path = os.path.join(args.model_dir, 'config.toml')
 
-    my_predictor = EffNetPredictor(device=device, model_path=args.model_path)
+    if not os.path.exists(config_path):
+        raise FileExistsError('config.toml doesn\'t exist')
+
+    config = toml.load(config_path)
+    
+    predictor_kwargs_pairs = [
+        ('model_path', ('model', 'path')),
+        ('model_import_path', ('model', 'model_import_path')),
+        ('model_kwargs', ('model', 'model_kwargs')),
+    ]
+    
+    predictor_kwargs = {}
+    for kwarg_name, keys in predictor_kwargs_pairs:
+        kwarg = extract(config, *keys)
+        if kwarg is not None:
+            predictor_kwargs[kwarg_name] = kwarg
+    predictor_kwargs['model_path'] = os.path.join(args.model_dir, args.model_name)
+            
+    dataset_kwargs = extract(config, 'dataset', 'dataset_kwargs')
+    if dataset_kwargs is None:
+        dataset_kwargs = {}
+    if args.stride is not None:
+        dataset_kwargs['stride'] = args.stride
+    print(dataset_kwargs)
+    
+    my_predictor = Predictor(device=device, 
+                          **predictor_kwargs,
+                         )
+
     song_id = '1'
     results = {}
     do_svs = args.svs
@@ -102,11 +155,11 @@ def main(args):
 
     if os.path.isfile(input_path):
         predict_one_song(my_predictor, input_path, song_id, results, do_svs=do_svs
-            , tomidi=True, output_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres))
+            , tomidi=True, output_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs = dataset_kwargs)
 
     elif os.path.isdir(input_path):
         predict_whole_dir(my_predictor, input_path, do_svs=do_svs
-            , output_json_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres))
+            , output_json_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs = dataset_kwargs)
     else:
         print ("\"input\" argument is not a valid path/directory, no audio is trancribed......")
 
@@ -130,11 +183,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('input', help="input audio/folder path")
     parser.add_argument('output', help="output MIDI/JSON path")
-    parser.add_argument('-p', '--model_path', default="models/1005_e_4", help="model path")
+    parser.add_argument('-p', '--model_dir', help="model dir")
+    parser.add_argument('-n', '--model_name', help="model name")
     parser.add_argument('-s', '--svs', action="store_true", help="use Spleeter to extract vocal or not")
     parser.add_argument('-on', "--onset_thres", default=0.4, help="onset threshold")
     parser.add_argument('-off', "--offset_thres", default=0.5, help="silence threshold")
     parser.add_argument('-d', "--device", default="cuda:0", help="device to use if cuda is available")
+    parser.add_argument('-m', "--mimo", action="store_true", help="whether multi-input-multi-output")
+    parser.add_argument('--stride', default=None, type=int)
 
     args = parser.parse_args()
 

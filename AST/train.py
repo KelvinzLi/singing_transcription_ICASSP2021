@@ -31,19 +31,6 @@ def main(args):
     config = toml.load(config_path)
 
     print(yaml.dump(config, allow_unicode=True, default_flow_style=False))
-
-#     batch_size = config['training']['batch_size']
-#     batch_size = config['training']['valid_batch_size']
-#     epochs = config['training']['epochs']
-#     lr = config['training']['lr']
-
-#     dataset_import_path = config['dataset']['import_path']
-#     dataset_kwargs = config['dataset']['kwargs']
-#     train_dataset = config['dataset']['train_dataset']
-#     validation_dataset = config['dataset']['validation_dataset']
-    
-#     model_import_path = config['model']['import_path']
-#     model_kwargs = config['model']['kwargs']
     
     predictor_kwargs_pairs = [
         ('model_path', ('model', 'path')),
