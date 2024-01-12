@@ -45,6 +45,7 @@ def main(args):
         ('lr', ('training', 'lr')),
         ('weight_decay', ('training', 'weight_decay')),
         ('onset_pos_weight', ('training', 'onset_pos_weight')),
+        ('offset_pos_weight', ('training', 'offset_pos_weight')),
         ('save_prefix', ('training', 'save_prefix')),
         
         ('dataset_import_path', ('dataset', 'dataset_import_path')),

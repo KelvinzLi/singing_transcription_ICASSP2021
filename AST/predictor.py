@@ -82,6 +82,7 @@ class Predictor:
         label_smoother_kwargs={},
         weight_decay=0, 
         onset_pos_weight=15.0,
+        offset_pos_weight=15.0,
         loss_weights = [1.2, 1.2, 0.8, 0.8],
         **training_args
     ):
@@ -154,7 +155,7 @@ class Predictor:
             self.scheduler.load_state_dict(checkpoint['scheduler'])
 
         self.onset_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([float(onset_pos_weight),], device=self.device))
-        self.offset_criterion = nn.BCEWithLogitsLoss()
+        self.offset_criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([float(offset_pos_weight),], device=self.device))
 
         self.octave_criterion = nn.CrossEntropyLoss(ignore_index=100)
         self.pitch_criterion = nn.CrossEntropyLoss(ignore_index=100)
