@@ -426,7 +426,7 @@ class Predictor:
 
         return result
 
-    def predict(self, test_dataset, results={}, onset_thres=0.1, offset_thres=0.5, mimo=False, return_details=False):
+    def predict(self, test_dataset, results={}, onset_thres=0.1, offset_thres=0.5, mimo=False, return_details=False, return_raw=False):
         """Predict results for a given test dataset."""
         # Setup params and dataloader
         batch_size = 500
@@ -484,6 +484,9 @@ class Predictor:
                                                    )
                                                )
                     song_frames_table[song_id] = stitched_frame_infos
+                    
+            if return_raw:
+                return song_frames_table
 
             # Parse frame info into output format for every song
             for song_id, frame_info in song_frames_table.items():

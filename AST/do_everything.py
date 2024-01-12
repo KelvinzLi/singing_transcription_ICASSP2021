@@ -69,7 +69,7 @@ def convert_to_midi(predicted_result, song_id, output_path):
     mid = notes2mid(to_convert)
     mid.save(output_path)
 
-def predict_one_song(predictor, wav_path, song_id, results, do_svs, tomidi, output_path, onset_thres, offset_thres, mimo_kwargs={}):
+def predict_one_song(predictor, wav_path, song_id, results, do_svs, tomidi, output_path, onset_thres, offset_thres, mimo_kwargs={}, correction_model=None):
     print(mimo_kwargs)
     
     # os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -78,7 +78,27 @@ def predict_one_song(predictor, wav_path, song_id, results, do_svs, tomidi, outp
     else:
         test_dataset = MimoSeqDataset(wav_path, song_id, do_svs=do_svs, **mimo_kwargs)
 
-    results = predictor.predict(test_dataset, results=results, onset_thres=onset_thres, offset_thres=offset_thres, mimo=args.mimo)
+    return_details = (correction_model is not None)
+        
+    results = predictor.predict(test_dataset, results=results, onset_thres=onset_thres, offset_thres=offset_thres, mimo=args.mimo, return_details=return_details)
+    
+    if correction_model is not None:
+        result = results[song_id]
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
+        details = np.stack([r[-1] for r in result], axis=0)
+        details = np.expand_dims(details, axis=0)
+        details = torch.from_numpy(details).to(device)
+        
+        print(details.size())
+        
+        refined = correction_model(details).detach().cpu().numpy()
+        refined = np.squeeze(refined)#.T
+        refined_pitch = np.argmax(refined[:, :-13], axis=-1) * 12 + np.argmax(refined[:, -13:], axis=-1) + 36
+        
+        result = [r[:2] + [p] for (r, p) in zip(result, refined_pitch)]
+        
+        results[song_id] = result
     
     print(results)
     
@@ -87,7 +107,7 @@ def predict_one_song(predictor, wav_path, song_id, results, do_svs, tomidi, outp
     return results
 
 
-def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres, offset_thres, mimo_kwargs={}):
+def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres, offset_thres, mimo_kwargs={}, correction_model=None):
     
     results = {}
     for song_dir in sorted(Path(test_dir).iterdir()):
@@ -98,7 +118,7 @@ def predict_whole_dir(predictor, test_dir, do_svs, output_json_path, onset_thres
             continue
 
         results = predict_one_song(predictor, wav_path, song_id, results, do_svs=do_svs
-            , tomidi=False, output_path=None, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs=mimo_kwargs)
+            , tomidi=False, output_path=None, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs=mimo_kwargs, correction_model = correction_model)
 
     with open(output_json_path, 'w') as f:
         output_string = json.dumps(results)
@@ -146,6 +166,11 @@ def main(args):
     my_predictor = Predictor(device=device, 
                           **predictor_kwargs,
                          )
+    
+    correction_model = None
+    if args.correction_model is not None:
+        correction_model = torch.jit.load(args.correction_model).to(device)
+        correction_model.eval()
 
     song_id = '1'
     results = {}
@@ -155,11 +180,11 @@ def main(args):
 
     if os.path.isfile(input_path):
         predict_one_song(my_predictor, input_path, song_id, results, do_svs=do_svs
-            , tomidi=True, output_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs = dataset_kwargs)
+            , tomidi=True, output_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs = dataset_kwargs, correction_model = correction_model)
 
     elif os.path.isdir(input_path):
         predict_whole_dir(my_predictor, input_path, do_svs=do_svs
-            , output_json_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs = dataset_kwargs)
+            , output_json_path=output_path, onset_thres=float(args.onset_thres), offset_thres=float(args.offset_thres), mimo_kwargs = dataset_kwargs, correction_model = correction_model)
     else:
         print ("\"input\" argument is not a valid path/directory, no audio is trancribed......")
 
@@ -191,6 +216,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', "--device", default="cuda:0", help="device to use if cuda is available")
     parser.add_argument('-m', "--mimo", action="store_true", help="whether multi-input-multi-output")
     parser.add_argument('--stride', default=None, type=int)
+    parser.add_argument('-c', '--correction_model', help="correction_model_path")
 
     args = parser.parse_args()
 
