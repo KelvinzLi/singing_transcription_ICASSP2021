@@ -16,7 +16,7 @@ import json
 
 class MimoAudioDataset(Dataset):
     # around 43 samples persecond for the current setting
-    def __init__(self, data_dir, window_size=128, stride=32, label_smoother=None, random_shift=True, log_and_normalize=False):
+    def __init__(self, data_dir, window_size=128, stride=32, label_smoother=None, random_shift=True, log_and_normalize=False, shift_dict_path=None):
         print(window_size)
         print(stride)
         
@@ -25,7 +25,14 @@ class MimoAudioDataset(Dataset):
         self.random_shift = random_shift
         self.log_and_normalize = log_and_normalize
         
-        counter = 0
+        # Some denotations not align with the CQT
+        shift_dict = None
+        if shift_dict_path is not None:
+            print('using shift dict from:', shift_dict_path)
+            with open(shift_dict_path) as f:
+                shift_dict = json.load(f)
+        
+        gt_padding = np.array([0, 1, 4, 12])
         
         self.data_instances = []
         self.idx_mapper = []
@@ -33,6 +40,14 @@ class MimoAudioDataset(Dataset):
             data = np.load(os.path.join(self.data_dir, file_name))
             cqt_data = torch.tensor(data['x'], dtype=torch.float)
             answer_data = data['y']
+            
+            if shift_dict is not None:
+                denotation_shift = shift_dict[file_name.split('.')[0]]
+                if denotation_shift > 0:
+                    cqt_padding = torch.zeros((cqt_data.shape[1], cqt_data.shape[2]))
+                    cqt_data = torch.cat([cqt_data, torch.stack([cqt_padding] * denotation_shift, 0)], 0)
+                    answer_data = np.concatenate([[gt_padding] * denotation_shift, answer_data], 0)
+                    
             self.data_instances.append((cqt_data, answer_data))
             
             _mapper = []
@@ -43,10 +58,6 @@ class MimoAudioDataset(Dataset):
                     _mapper.append((ii, jj * stride))
             
             self.idx_mapper.extend(_mapper)
-            counter += cqt_data.shape[0]
-            
-        print(len(self.idx_mapper))
-        print(counter)
         
         self.label_smoother = label_smoother
         
@@ -69,6 +80,7 @@ class MimoAudioDataset(Dataset):
         if self.log_and_normalize:
             cqt_feature = torch.clamp(cqt_feature, 1e-6, None)
             cqt_feature = torch.log10(cqt_feature)
+            # cqt_feature = (cqt_feature - torch.mean(cqt_feature, dim=-1, keepdim=True)) / torch.clamp(torch.std(cqt_feature, dim=-1, keepdim=True), 1e-5, None)
             cqt_feature = (cqt_feature - torch.mean(cqt_feature)) / torch.clamp(torch.std(cqt_feature), 1e-5, None)
         
         if len(gt) < self.window_size:
