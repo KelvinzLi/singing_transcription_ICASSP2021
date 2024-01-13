@@ -82,7 +82,7 @@ class Predictor:
         label_smoother_kwargs={},
         weight_decay=0, 
         onset_pos_weight=15.0,
-        offset_pos_weight=15.0,
+        offset_pos_weight=1,
         loss_weights = [1.2, 1.2, 0.8, 0.8],
         **training_args
     ):
