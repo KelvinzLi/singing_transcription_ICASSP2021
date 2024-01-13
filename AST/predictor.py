@@ -352,7 +352,7 @@ class Predictor:
         
         print('Training done in {:.1f} minutes.'.format((time.time()-start_time)/60))
 
-    def _parse_frame_info(self, frame_info, onset_thres, offset_thres):
+    def _parse_frame_info(self, frame_info, onset_thres, offset_thres, return_details=False):
         """Parse frame info [(onset_probs, offset_probs, pitch_class)...] into desired label format."""
 
         result = []
@@ -389,7 +389,7 @@ class Predictor:
 
                 else:
                     if len(pitch_counter) > 0:
-                        result.append([current_onset, current_time, max(set(pitch_counter), key=pitch_counter.count) + 36])
+                        result.append([current_onset, current_time, np.mean(pitch_counter, axis=0)])
 
                     current_onset = current_time
                     last_onset = info[0] - onset_thres
@@ -398,26 +398,35 @@ class Predictor:
             elif info[1] >= offset_thres:  # If is offset
                 if current_onset is not None:
                     if len(pitch_counter) > 0:
-                        result.append([current_onset, current_time, max(set(pitch_counter), key=pitch_counter.count) + 36])
+                        result.append([current_onset, current_time, np.mean(pitch_counter, axis=0)])
                     current_onset = None
 
                     pitch_counter = []
 
             # If current_onset exist, add count for the pitch
             if current_onset is not None:
-                final_pitch = int(info[2]* 12 + info[3])
-                if info[2] != 4 and info[3] != 12:
+                pitch_octave_idx = np.argmax(info[2])
+                pitch_class_idx = np.argmax(info[3])
+                
+                if pitch_octave_idx != 4 and pitch_octave_idx != 12:
                 # if final_pitch != 60:
-                    pitch_counter.append(final_pitch)
+                    pitch_octave_details = info[2][:-1] / np.sum(info[2][:-1])
+                    pitch_class_details = info[3][:-1] / np.sum(info[3][:-1])
+                    pitch_counter.append(np.concatenate([pitch_octave_details, pitch_class_details], axis=0))
 
         if current_onset is not None:
             if len(pitch_counter) > 0:
-                result.append([current_onset, current_time, max(set(pitch_counter), key=pitch_counter.count) + 36])
+                result.append([current_onset, current_time, np.mean(pitch_counter, axis=0)])
             current_onset = None
+            
+        if not return_details:
+            for ii, info in enumerate(result):
+                info[2] = np.argmax(info[2][:-12]) * 12 + np.argmax(info[2][-12:]) + 36
+                result[ii] = info
 
         return result
 
-    def predict(self, test_dataset, results={}, onset_thres=0.1, offset_thres=0.5, mimo=False):
+    def predict(self, test_dataset, results={}, onset_thres=0.1, offset_thres=0.5, mimo=False, return_details=False, return_raw=False):
         """Predict results for a given test dataset."""
         # Setup params and dataloader
         batch_size = 500
@@ -447,16 +456,16 @@ class Predictor:
                 pitch_class_logits = result_tuple[3]
 
                 onset_probs, offset_probs = torch.sigmoid(onset_logits).cpu(), torch.sigmoid(offset_logits).cpu()
-                pitch_octave_logits, pitch_class_logits = pitch_octave_logits.cpu(), pitch_class_logits.cpu()
+                pitch_octave_logits, pitch_class_logits = torch.nn.functional.softmax(pitch_octave_logits.cpu(), dim=1), torch.nn.functional.softmax(pitch_class_logits.cpu(), dim=1)
                 # print (pitch_octave_logits)
 
 
                 # Collect frames for corresponding songs
                 for bid, song_id in enumerate(song_ids):
                     if not mimo:
-                        frame_info = (onset_probs[bid], offset_probs[bid], torch.argmax(pitch_octave_logits[bid], 0).item(), torch.argmax(pitch_class_logits[bid], 0).item())
+                        frame_info = (onset_probs[bid], offset_probs[bid], pitch_octave_logits[bid], pitch_class_logits[bid])
                     else:
-                        frame_info = (onset_probs[bid].numpy(), offset_probs[bid].numpy(), torch.argmax(pitch_octave_logits[bid], 0).numpy(), torch.argmax(pitch_class_logits[bid], 0).numpy())
+                        frame_info = (onset_probs[bid].numpy(), offset_probs[bid].numpy(), pitch_octave_logits[bid].numpy().T, pitch_class_logits[bid].numpy().T)
 
                     song_frames_table.setdefault(song_id, [])
                     song_frames_table[song_id].append(frame_info)
@@ -475,8 +484,11 @@ class Predictor:
                                                    )
                                                )
                     song_frames_table[song_id] = stitched_frame_infos
+                    
+            if return_raw:
+                return song_frames_table
 
             # Parse frame info into output format for every song
             for song_id, frame_info in song_frames_table.items():
-                results[song_id] = self._parse_frame_info(frame_info, onset_thres=onset_thres, offset_thres=offset_thres)
+                results[song_id] = self._parse_frame_info(frame_info, onset_thres=onset_thres, offset_thres=offset_thres, return_details=return_details)
         return results

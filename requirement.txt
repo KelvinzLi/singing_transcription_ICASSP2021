@@ -7,3 +7,4 @@ youtube_dl
 tqdm
 mido
 toml
+biopython
