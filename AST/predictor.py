@@ -361,6 +361,7 @@ class Predictor:
 
         last_onset = 0.0
         onset_seq = np.array([frame_info[i][0] for i in range(len(frame_info))])
+        offset_seq = np.array([frame_info[i][1] for i in range(len(frame_info))])
 
         local_max_size = 3
         current_time = 0.0
@@ -395,7 +396,7 @@ class Predictor:
                     last_onset = info[0] - onset_thres
                     pitch_counter = []
 
-            elif info[1] >= offset_thres:  # If is offset
+            elif info[1] >= offset_thres and offset_seq[i] == np.amax(offset_seq[backward_frames : forward_frames]):  # If is offset
                 if current_onset is not None:
                     if len(pitch_counter) > 0:
                         result.append([current_onset, current_time, np.mean(pitch_counter, axis=0)])
